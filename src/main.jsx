@@ -1,230 +1,282 @@
-import React, { useEffect, useMemo, useState } from 'react'
-import { createRoot } from 'react-dom/client'
-import './styles.css'
+import React, { useEffect, useMemo, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import './styles.css';
 
-const STORAGE_KEY = 'sarika50_photos_v1'
+const STORAGE_KEY = 'sarika50_photos_v3';
+
+function uid() {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function getInitialView() {
+  const hash = window.location.hash.replace('#', '').toLowerCase();
+  if (['home', 'album', 'admin', 'messages'].includes(hash)) return hash;
+  const path = window.location.pathname.toLowerCase();
+  if (path.includes('/admin')) return 'admin';
+  if (path.includes('/album')) return 'album';
+  return 'home';
+}
 
 function readPhotos() {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
   } catch {
-    return []
+    return [];
   }
 }
 
-function savePhotos(photos) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(photos))
-}
-
 function App() {
-  const [route, setRoute] = useState(getRoute())
-  const [photos, setPhotos] = useState(readPhotos)
+  const [view, setView] = useState(getInitialView());
+  const [photos, setPhotos] = useState(readPhotos);
 
   useEffect(() => {
-    savePhotos(photos)
-  }, [photos])
+    const onHash = () => setView(getInitialView());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
 
   useEffect(() => {
-    const onRoute = () => setRoute(getRoute())
-    window.addEventListener('popstate', onRoute)
-    window.addEventListener('hashchange', onRoute)
-    return () => {
-      window.removeEventListener('popstate', onRoute)
-      window.removeEventListener('hashchange', onRoute)
-    }
-  }, [])
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(photos));
+  }, [photos]);
 
-  const navigate = (next) => {
-    window.history.pushState({}, '', next)
-    setRoute(getRoute())
+  const publishedPhotos = useMemo(
+    () => photos.filter((p) => p.published).sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)),
+    [photos]
+  );
+
+  function navigate(nextView) {
+    window.location.hash = nextView;
+    setView(nextView);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function addFiles(fileList) {
+    const files = Array.from(fileList || []).filter((file) => file.type.startsWith('image/'));
+    files.forEach((file, index) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        setPhotos((current) => [
+          ...current,
+          {
+            id: uid(),
+            src: reader.result,
+            name: file.name,
+            caption: '',
+            chapter: 'Golden 50',
+            published: true,
+            featured: current.length === 0 && index === 0,
+            sortOrder: current.length + index + 1,
+            reactions: { like: 0, heart: 0, wow: 0 },
+            comments: [],
+          },
+        ]);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function updatePhoto(id, patch) {
+    setPhotos((current) => current.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  }
+
+  function deletePhoto(id) {
+    setPhotos((current) => current.filter((p) => p.id !== id));
+  }
+
+  function reactToPhoto(id, reaction) {
+    setPhotos((current) =>
+      current.map((p) =>
+        p.id === id
+          ? { ...p, reactions: { ...p.reactions, [reaction]: (p.reactions?.[reaction] || 0) + 1 } }
+          : p
+      )
+    );
+  }
+
+  function addComment(id, comment) {
+    const trimmed = comment.trim();
+    if (!trimmed) return;
+    setPhotos((current) =>
+      current.map((p) =>
+        p.id === id
+          ? { ...p, comments: [...(p.comments || []), { id: uid(), text: trimmed, name: 'Guest' }] }
+          : p
+      )
+    );
   }
 
   return (
     <div className="app-shell">
       <Header navigate={navigate} />
-      {route === 'admin' ? (
-        <Admin photos={photos} setPhotos={setPhotos} />
-      ) : route === 'album' ? (
-        <Album photos={photos} />
-      ) : (
-        <Home photos={photos} navigate={navigate} />
+      {view === 'home' && <Home navigate={navigate} publishedCount={publishedPhotos.length} />}
+      {view === 'album' && <Album photos={publishedPhotos} onReact={reactToPhoto} onComment={addComment} navigate={navigate} />}
+      {view === 'messages' && <Messages />}
+      {view === 'admin' && (
+        <Admin
+          photos={photos}
+          addFiles={addFiles}
+          updatePhoto={updatePhoto}
+          deletePhoto={deletePhoto}
+          navigate={navigate}
+        />
       )}
-      <BottomNav route={route} navigate={navigate} />
+      <BottomNav view={view} navigate={navigate} />
     </div>
-  )
-}
-
-function getRoute() {
-  const hash = window.location.hash.replace('#', '').replace('/', '').toLowerCase()
-  const path = window.location.pathname.toLowerCase()
-  if (hash === 'admin' || path.endsWith('/admin')) return 'admin'
-  if (hash === 'album' || path.endsWith('/album')) return 'album'
-  return 'home'
+  );
 }
 
 function Header({ navigate }) {
   return (
     <header className="topbar">
-      <button className="brand" onClick={() => navigate('/')}>Sarika<span>50</span></button>
-      <nav>
-        <button onClick={() => navigate('/#album')}>Album</button>
-        <button className="admin-link" onClick={() => navigate('/#admin')}>Admin</button>
-      </nav>
+      <button className="brand" type="button" onClick={() => navigate('home')}>
+        <span>Sarika</span>
+        <small>Golden • 50</small>
+      </button>
+      <button className="pill" type="button" onClick={() => navigate('admin')}>Admin</button>
     </header>
-  )
+  );
 }
 
-function Home({ photos, navigate }) {
-  const featured = photos.find(p => p.featured && p.published) || photos.find(p => p.published)
+function Home({ navigate, publishedCount }) {
   return (
-    <main className="hero-page">
-      <section className="hero-card">
-        {featured?.src ? <img src={featured.src} className="hero-photo" alt={featured.caption || 'Sarika Golden 50'} /> : null}
-        <div className="hero-overlay" />
-        <div className="hero-content">
-          <p className="eyebrow">A Golden Birthday Experience</p>
-          <h1>Sarika<br /><span>Golden • 50</span></h1>
-          <p className="intro">A luxury mobile-first digital album, memory wall, and keepsake for Sarika’s 50th birthday.</p>
-          <div className="hero-actions">
-            <button onClick={() => navigate('/#album')}>View Album</button>
-            <button className="secondary" onClick={() => navigate('/#admin')}>Upload Photos</button>
-          </div>
-        </div>
-      </section>
-      <section className="status-card">
-        <strong>{photos.length}</strong> photos added locally on this device. Use Admin to upload and caption images.
+    <main className="hero page">
+      <div className="gold-orb" />
+      <p className="eyebrow">A luxury digital keepsake</p>
+      <h1>Sarika<br />Golden 50</h1>
+      <p className="subtitle">A mobile-first birthday album for portraits, memories, love notes, reactions, and 30-second video tributes.</p>
+      <div className="button-row">
+        <button className="primary" type="button" onClick={() => navigate('album')}>View Album</button>
+        <button className="secondary" type="button" onClick={() => navigate('admin')}>Upload Photos</button>
+      </div>
+      <div className="status-card">
+        <strong>{publishedCount}</strong>
+        <span>published photos</span>
+      </div>
+    </main>
+  );
+}
+
+function Album({ photos, onReact, onComment, navigate }) {
+  if (!photos.length) {
+    return (
+      <main className="page empty-state">
+        <h2>No photos published yet</h2>
+        <p>Use the admin upload manager to add photos, captions, chapters, and sort order.</p>
+        <button className="primary" type="button" onClick={() => navigate('admin')}>Go to Admin Uploads</button>
+      </main>
+    );
+  }
+
+  return (
+    <main className="page">
+      <p className="eyebrow">Digital Album</p>
+      <h2 className="section-title">Golden Moments</h2>
+      <section className="photo-grid">
+        {photos.map((photo) => <PhotoCard key={photo.id} photo={photo} onReact={onReact} onComment={onComment} />)}
       </section>
     </main>
-  )
+  );
 }
 
-function Admin({ photos, setPhotos }) {
-  const [caption, setCaption] = useState('')
-  const [chapter, setChapter] = useState('Golden 50')
+function PhotoCard({ photo, onReact, onComment }) {
+  const [comment, setComment] = useState('');
+  return (
+    <article className="photo-card">
+      <img src={photo.src} alt={photo.caption || photo.name || 'Sarika50 photo'} />
+      <div className="photo-copy">
+        <p className="chapter">{photo.chapter || 'Golden 50'}</p>
+        <h3>{photo.caption || 'Untitled moment'}</h3>
+        <div className="reaction-row">
+          <button type="button" onClick={() => onReact(photo.id, 'like')}>👍 {photo.reactions?.like || 0}</button>
+          <button type="button" onClick={() => onReact(photo.id, 'heart')}>❤️ {photo.reactions?.heart || 0}</button>
+          <button type="button" onClick={() => onReact(photo.id, 'wow')}>😮 {photo.reactions?.wow || 0}</button>
+        </div>
+        <form className="comment-form" onSubmit={(e) => { e.preventDefault(); onComment(photo.id, comment); setComment(''); }}>
+          <input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Leave a kind comment" />
+          <button type="submit">Post</button>
+        </form>
+        {!!photo.comments?.length && (
+          <div className="comments">
+            {photo.comments.slice(-3).map((c) => <p key={c.id}><strong>{c.name}:</strong> {c.text}</p>)}
+          </div>
+        )}
+      </div>
+    </article>
+  );
+}
 
-  const handleFiles = async (event) => {
-    const files = Array.from(event.target.files || []).filter(file => file.type.startsWith('image/'))
-    const converted = await Promise.all(files.map(file => fileToDataUrl(file).then(src => ({
-      id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()),
-      src,
-      caption,
-      chapter,
-      published: true,
-      featured: photos.length === 0,
-      createdAt: new Date().toISOString()
-    }))))
-    setPhotos([...converted, ...photos])
-    event.target.value = ''
-    setCaption('')
-  }
-
-  const updatePhoto = (id, patch) => setPhotos(photos.map(p => p.id === id ? { ...p, ...patch } : p))
-  const removePhoto = (id) => setPhotos(photos.filter(p => p.id !== id))
-  const move = (id, direction) => {
-    const index = photos.findIndex(p => p.id === id)
-    const nextIndex = index + direction
-    if (nextIndex < 0 || nextIndex >= photos.length) return
-    const next = [...photos]
-    const [item] = next.splice(index, 1)
-    next.splice(nextIndex, 0, item)
-    setPhotos(next)
-  }
-
+function Admin({ photos, addFiles, updatePhoto, deletePhoto, navigate }) {
   return (
     <main className="page admin-page">
-      <section className="section-head">
-        <p className="eyebrow">Admin Portal</p>
-        <h1>Upload & Curate Photos</h1>
-        <p>This first version stores photos locally in your browser for layout testing. Next we’ll connect Supabase or Cloudflare R2 for permanent uploads.</p>
-      </section>
+      <p className="eyebrow">Admin Portal</p>
+      <h2 className="section-title">Upload & Curate Photos</h2>
+      <p className="admin-note">This version stores photos in your browser for layout testing. Next step is persistent Supabase or Cloudflare R2 storage.</p>
 
-      <section className="upload-panel">
-        <label>
-          Default caption
-          <input value={caption} onChange={e => setCaption(e.target.value)} placeholder="A beautiful golden moment..." />
-        </label>
-        <label>
-          Chapter
-          <select value={chapter} onChange={e => setChapter(e.target.value)}>
-            <option>Golden 50</option>
-            <option>Radiance</option>
-            <option>Family</option>
-            <option>Heart</option>
-            <option>Khmer Elegance</option>
-            <option>Lantern Night</option>
-          </select>
-        </label>
-        <label className="file-drop">
-          <span>Tap to upload photos</span>
-          <small>JPG, PNG, HEIC converted by browser when supported</small>
-          <input type="file" accept="image/*" multiple onChange={handleFiles} />
-        </label>
-      </section>
+      <label className="upload-box">
+        <input type="file" accept="image/*" multiple onChange={(e) => addFiles(e.target.files)} />
+        <span>Tap to upload photos</span>
+        <small>Select one or multiple images from your phone or computer.</small>
+      </label>
 
-      <section className="admin-grid">
-        {photos.map((photo) => (
-          <article className="admin-card" key={photo.id}>
-            <img src={photo.src} alt={photo.caption || 'Uploaded'} />
-            <input value={photo.caption} onChange={e => updatePhoto(photo.id, { caption: e.target.value })} placeholder="Caption" />
-            <input value={photo.chapter} onChange={e => updatePhoto(photo.id, { chapter: e.target.value })} placeholder="Chapter" />
-            <div className="toggles">
-              <label><input type="checkbox" checked={photo.published} onChange={e => updatePhoto(photo.id, { published: e.target.checked })} /> Published</label>
-              <label><input type="checkbox" checked={photo.featured} onChange={e => updatePhoto(photo.id, { featured: e.target.checked })} /> Featured</label>
+      <div className="admin-actions">
+        <button className="secondary" type="button" onClick={() => navigate('album')}>Preview Album</button>
+        <button className="secondary" type="button" onClick={() => navigate('home')}>Back Home</button>
+        <button className="danger" type="button" onClick={() => { if (confirm('Clear all uploaded test photos?')) localStorage.removeItem(STORAGE_KEY); location.reload(); }}>Clear Test Photos</button>
+      </div>
+
+      <section className="admin-list">
+        {photos.map((photo, index) => (
+          <div className="admin-item" key={photo.id}>
+            <img src={photo.src} alt={photo.name || 'Uploaded photo'} />
+            <div className="admin-fields">
+              <label>Caption
+                <input value={photo.caption} onChange={(e) => updatePhoto(photo.id, { caption: e.target.value })} placeholder="Add caption" />
+              </label>
+              <label>Chapter
+                <input value={photo.chapter} onChange={(e) => updatePhoto(photo.id, { chapter: e.target.value })} placeholder="Golden 50" />
+              </label>
+              <label>Sort Order
+                <input type="number" value={photo.sortOrder || index + 1} onChange={(e) => updatePhoto(photo.id, { sortOrder: Number(e.target.value) })} />
+              </label>
+              <div className="toggle-row">
+                <label><input type="checkbox" checked={!!photo.published} onChange={(e) => updatePhoto(photo.id, { published: e.target.checked })} /> Published</label>
+                <label><input type="checkbox" checked={!!photo.featured} onChange={(e) => updatePhoto(photo.id, { featured: e.target.checked })} /> Featured</label>
+              </div>
+              <button className="danger" type="button" onClick={() => deletePhoto(photo.id)}>Delete</button>
             </div>
-            <div className="card-actions">
-              <button onClick={() => move(photo.id, -1)}>↑</button>
-              <button onClick={() => move(photo.id, 1)}>↓</button>
-              <button className="danger" onClick={() => removePhoto(photo.id)}>Remove</button>
-            </div>
-          </article>
+          </div>
         ))}
       </section>
     </main>
-  )
+  );
 }
 
-function Album({ photos }) {
-  const published = useMemo(() => photos.filter(p => p.published), [photos])
+function Messages() {
   return (
-    <main className="page album-page">
-      <section className="section-head">
-        <p className="eyebrow">Digital Album</p>
-        <h1>Sarika Golden 50</h1>
-        <p>{published.length ? `${published.length} published photos` : 'No photos published yet. Use Admin to add photos.'}</p>
-      </section>
-      <section className="album-grid">
-        {published.map(photo => (
-          <article className="photo-card" key={photo.id}>
-            <img src={photo.src} alt={photo.caption || 'Sarika Golden 50'} />
-            <div>
-              <p className="chapter">{photo.chapter}</p>
-              <h2>{photo.caption || 'A golden moment'}</h2>
-              <div className="reactions"><button>👍</button><button>❤️</button><button>😮</button></div>
-            </div>
-          </article>
-        ))}
-      </section>
+    <main className="page empty-state">
+      <p className="eyebrow">Video Messages</p>
+      <h2>30-second tributes</h2>
+      <p>This page is reserved for the next phase: guest video recording, admin review, and approved memory wall playback.</p>
     </main>
-  )
+  );
 }
 
-function BottomNav({ route, navigate }) {
+function BottomNav({ view, navigate }) {
+  const items = [
+    ['home', 'Home'],
+    ['album', 'Album'],
+    ['messages', 'Messages'],
+    ['admin', 'Admin'],
+  ];
   return (
-    <footer className="bottom-nav">
-      <button className={route === 'home' ? 'active' : ''} onClick={() => navigate('/')}>Home</button>
-      <button className={route === 'album' ? 'active' : ''} onClick={() => navigate('/#album')}>Album</button>
-      <button className={route === 'admin' ? 'active' : ''} onClick={() => navigate('/#admin')}>Admin</button>
-    </footer>
-  )
+    <nav className="bottom-nav" aria-label="Main navigation">
+      {items.map(([key, label]) => (
+        <button key={key} type="button" className={view === key ? 'active' : ''} onClick={() => navigate(key)}>
+          {label}
+        </button>
+      ))}
+    </nav>
+  );
 }
 
-function fileToDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result)
-    reader.onerror = reject
-    reader.readAsDataURL(file)
-  })
-}
-
-createRoot(document.getElementById('root')).render(<App />)
+createRoot(document.getElementById('root')).render(<App />);
